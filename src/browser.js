@@ -1,8 +1,8 @@
 /**
- * Browser lifecycle for logins. Each attempt boots a brand-new Chromium process
- * through launchServer() so we hold the real OS process: its PID proves the
- * attempt is a cold start, and kill() tears it down even if a graceful close
- * hangs.
+ * Browser lifecycle for logins and recording downloads. Each run boots a
+ * brand-new Chromium process through launchServer() so we hold the real OS
+ * process: its PID proves the run is a cold start, and kill() tears it down
+ * even if a graceful close hangs.
  */
 const { chromium } = require('playwright');
 const config = require('./config');
@@ -26,11 +26,11 @@ function isAlive(pid) {
   }
 }
 
-async function launchColdBrowser(attempt) {
+async function launchColdBrowser(label) {
   const server = await chromium.launchServer({ headless: !config.headful });
   const pid = server.process().pid;
   const browser = await chromium.connect(server.wsEndpoint());
-  console.log(`→ Login attempt ${attempt}: launched a fresh Chromium (pid ${pid}).`);
+  console.log(`→ ${label}: launched a fresh Chromium (pid ${pid}).`);
   return { server, browser, pid };
 }
 

@@ -1,16 +1,13 @@
-# downloadrecord — BINUS LMS class downloads
+# downloadrecord — BINUS LMS lecture recordings
 
-A small server that keeps track of everything downloadable from your BINUS LMS
-classes:
+A small server that downloads the lecture recordings of your BINUS LMS classes
+(Zoom, onsite *and* online). New recordings are detected as soon as they appear
+and **downloaded from SharePoint** with Playwright. The dashboard also has an
+**Open on SharePoint** link that fetches a fresh link on click and opens it in
+your own browser.
 
-- **Course materials** (documents, PDFs, archives) are downloaded automatically
-  into a folder per course and session.
-- **Lecture recordings** (Zoom, onsite *and* online classes) are detected as
-  soon as they appear. The dashboard gives you an **Open recording** link that
-  fetches a fresh SharePoint link on click. It opens in your own browser, where
-  you're signed in with your BINUS account.
-
-It works over the LMS's own HTTP API. A browser is used only to log in.
+Finding recordings uses the LMS's own HTTP API. A browser is used only to log
+in to the LMS and to download recordings from SharePoint.
 
 ## How it works
 
@@ -19,10 +16,11 @@ every SCAN_INTERVAL_MINUTES (and on startup)
   └─ scan
        ├─ session : reuse the saved LMS session, or log in with Playwright
        │            (.env credentials) when it's missing / expired / rejected
-       ├─ catalog : period → class components → classes → sessions → resources
+       ├─ catalog : period → class components → classes → sessions
        ├─ recordings : ask the recording endpoint for each past session that had
        │               a Zoom meeting; 404 = not ready yet, re-checked next scan
-       ├─ materials  : Document / PDF / Archive → fresh download URL → file on disk
+       ├─ recording downloads : one Playwright browser → SharePoint sign-in →
+       │                        browser download of each recording not on disk
        └─ store      : SQLite record of every item and its status
 
 browser ── /d/<ACCESS_TOKEN> ──▶ dashboard (classes, sessions, recordings, files)
@@ -47,6 +45,38 @@ Whenever a login is needed, the server runs **Playwright with the credentials in
 
 Everything after that is plain HTTP with those headers.
 
+### Recording downloads
+
+The LMS hands out recordings as SharePoint share links
+(`binusianorg.sharepoint.com/sites/bm5-zoomN/_layouts/15/guestaccess.aspx?share=…`).
+They aren't anonymous, and the LMS token doesn't sign you in to SharePoint, so
+at the end of each scan the server downloads every recording that isn't on disk
+yet in **one cold Playwright browser**:
+
+1. Ask the LMS for a fresh `recordingUrl` (they last ~12h) and open it.
+2. SharePoint redirects to the Microsoft sign-in; Playwright signs in with the
+   `.env` credentials. This happens on the first recording only: the SharePoint
+   cookies carry over to the rest of the batch.
+3. The link lands on the video player (`stream.aspx?id=<file path>`). The file's
+   name and size come from SharePoint's REST API with the same cookies.
+4. Playwright downloads `<site>/_layouts/15/download.aspx?SourceUrl=<file path>`
+   (falling back to the share link with `download=1`) into `<file>.part`,
+   checks the size and renames it into place.
+
+A recording that fails is marked `failed` (the reason shows on hover in the
+dashboard) and retried on the next scan. A failed sign-in stops the batch and
+leaves the items as they were. Signed in as the student, SharePoint always
+allows the download.
+
+Run just the recording downloads, without a full scan (uses what the last scan
+found):
+
+```bash
+npm run recordings                 # every recording not on disk yet
+npm run recordings -- <sessionId>  # one (or more) specific sessions
+HEADFUL=true npm run recordings -- <sessionId>   # watch it
+```
+
 ## The LMS API it uses
 
 All calls carry the session headers. `{role}` is `Student`.
@@ -57,8 +87,7 @@ All calls carry the session headers. `{role}` is `Student`.
 | Components | `GET {course}/Course/Period/{period}/ClassComponentList/Student` | e.g. `["LAB","LEC","TUT"]` |
 | Classes | `GET {course}/Course/Period/{period}/Component/{component}/{role}` | `[{ classId, courseCode, courseName, classCode, … }]` |
 | Sessions | `GET {course}/ClassSession/Class/{classId}/{role}` | `{ courseCode, courseTitleEn, sessions: [{ id, classSessionNumber, dateEnd, … }] }` |
-| Session detail | `GET {course}/ClassSession/Session/{sessionId}/Resource/{role}?isWeb=true` | `{ deliveryMode, joinUrl, dateStart, resources: [{ id, name, resourceType, … }] }` |
-| Resource detail | `GET {course}/ClassSession/{sessionId}/Session/Resource/{resourceId}` | `{ url, contentLength, … }`. For files, `url` is a pre-signed download link. |
+| Session detail | `GET {course}/ClassSession/Session/{sessionId}/Resource/{role}?isWeb=true` | `{ deliveryMode, joinUrl, dateStart, … }`. Only called for sessions whose recording hasn't been found yet. |
 | Recording | `GET {course}/ClassSessionContent/ZoomRecording/ClassSession/{sessionId}` | `{ recordingUrl, expiredDate }`, or `404` when there's no recording (yet) |
 | Profile | `GET {profile}/UserProfile` | name, email, roles |
 
@@ -76,15 +105,13 @@ All calls carry the session headers. `{role}` is `Student`.
   never get a recording. Sessions without a `joinUrl` are skipped.
 - **Recording links are short-lived.** `recordingUrl` is a SharePoint link
   generated on each call and valid for about 12h, so it's never stored; the
-  dashboard asks for a new one when you click. Opening it requires being signed
-  in to Microsoft with your BINUS account in your browser.
-- **Material links are short-lived too.** File URLs are pre-signed Azure Blob
-  links valid for about 6h. They're fetched right before each download and need
-  no login. Their path ends with the real filename, and `contentLength` gives
-  the exact size, which is checked after download.
-- Resource types seen: `Document`, `Pdf`, `Archive` (downloaded); `Link` (an
-  external URL, e.g. YouTube); `Virtual Class`, `Wifi Attendance`, `Assessment`,
-  `LTI`, `Forum` (nothing to download).
+  downloader and the dashboard ask for a new one right before use. Opening it
+  requires a Microsoft sign-in with your BINUS account.
+- **Downloading works for the student account** (verified 2026-10-15). After
+  sign-in the share link lands on the player for a file like
+  `/sites/bm5-zoom8/zoomrecording/zoom/recording/RS1/2026-9-9/<meetingId>.mp4`;
+  the REST API reports its size, and `download.aspx` serves it. Recordings are
+  1080p H.264 + AAC MP4s, roughly 70–100 MB per class.
 
 ## Setup
 
@@ -107,6 +134,7 @@ node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
 ```bash
 npm start        # server + scan on startup + scan every SCAN_INTERVAL_MINUTES
 npm run scan     # one scan, no server
+npm run recordings  # only download recordings the last scan found
 npm run login    # force a fresh login (watch it with HEADFUL=true)
 ```
 
@@ -116,17 +144,17 @@ Then open the dashboard at `http://<host>:<PORT>/d/<ACCESS_TOKEN>`.
 
 | Route | What |
 |---|---|
-| `GET /d/<token>` | Dashboard: one table per class, one row per session, with the recording link and downloaded files. Has a **Scan now** button. |
-| `GET /d/<token>/api/items` | JSON list of all items. Filter with `?kind=recording\|material`, `&status=…`, `&period=…`. |
+| `GET /d/<token>` | Dashboard: one table per class, one row per session, with the downloaded recording and its SharePoint link. Has a **Scan now** button. |
+| `GET /d/<token>/api/items` | JSON list of all recordings. Filter with `?status=…`, `&period=…`. |
 | `POST /d/<token>/scan` | Start a scan now. Returns `202`; returns the running scan if one is already going. |
 | `GET /d/<token>/recording/<sessionId>` | Redirects to a fresh recording link (`404` if there isn't one yet). |
-| `GET /d/<token>/files/<path>` | A downloaded material file. |
+| `GET /d/<token>/files/<path>` | A downloaded recording. |
 | `GET /healthz` | `{ ok, lastScan, scanning, counts }` (no secrets). |
 
 Any other token returns `404`.
 
 Item statuses: `not_yet` (recording not available yet), `available` (found),
-`downloaded` (material on disk), `failed` (last download failed; retried on the
+`downloaded` (file on disk), `failed` (last download failed; retried on the
 next scan, with the error shown on hover).
 
 ### Where files go
@@ -135,8 +163,8 @@ next scan, with the error shown on hover).
 downloads/
   2610/
     COMP6798001 Program Design Methods (LEC)/
-      S01/<original filename>
-      S02/…
+      COMP6798001 LEC S01 recording.mp4
+      COMP6798001 LEC S02 recording.mp4
 ```
 
 ## Config (`.env`)
@@ -149,7 +177,8 @@ downloads/
 | `PORT` | `3100` | server port |
 | `SCAN_INTERVAL_MINUTES` | `360` | how often to scan |
 | `PERIODS` | *(active period)* | comma-separated period codes, e.g. `2610,2520` |
-| `DOWNLOAD_MATERIALS` | `true` | download material files |
+| `DOWNLOAD_RECORDINGS` | `true` | download recordings from SharePoint (`false` = track and link only) |
+| `RECORDING_TIMEOUT_MIN` | `90` | a single recording download longer than this is cancelled |
 | `DOWNLOAD_DIR` | `./downloads` | where files go |
 | `DATA_DIR` | `./data` | session + SQLite db |
 | `LOGIN_MAX_ATTEMPTS` | `3` | cold-start login retries |
@@ -177,12 +206,12 @@ not require an MFA prompt that a headless browser can't answer.
 |---|---|
 | `index.js` | Boots the server, the scan scheduler, and a startup scan. |
 | `src/config.js` | Reads `.env`; resolves paths. |
-| `src/browser.js` | Cold Chromium launch per attempt + guaranteed shutdown. |
+| `src/browser.js` | Cold Chromium launch per login attempt / download batch + guaranteed shutdown. |
 | `src/login.js` | Playwright login; captures the LMS API headers. |
 | `src/session.js` | Saved session; logs in only when it's unusable; one login at a time. |
 | `src/lms.js` | LMS HTTP client (session headers, `401` → re-login + retry once). |
-| `src/scan.js` | The scan: catalog walk, recording detection, material downloads. |
-| `src/download.js` | Streams a URL to disk (`.part` + size check + rename). |
+| `src/scan.js` | The scan: catalog walk and recording detection, then recording downloads. |
+| `src/recordings.js` | SharePoint recording downloads in Playwright (sign-in + browser download). |
 | `src/store.js` | SQLite (`node:sqlite`) item store. |
 | `src/server.js` / `src/page.js` | Express routes and the dashboard HTML. |
 

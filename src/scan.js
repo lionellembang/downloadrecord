@@ -1,24 +1,17 @@
 /**
- * One scan: walk period → components → classes → sessions → resources over the
- * LMS API, record every recording and material file, and download the material
- * files that aren't on disk yet.
+ * One scan: walk period → components → classes → sessions over the LMS API,
+ * record every recording, then download the ones that aren't on disk yet.
  *
- * Recordings: only sessions that had a Zoom meeting can have one. A 404 from the
+ * Only sessions that had a Zoom meeting can have a recording. A 404 from the
  * recording endpoint means "not ready yet" (they appear some days after class),
- * so those are re-checked every scan. Recording links are never stored; the web
- * UI fetches a fresh one (~12h) when you open it.
- *
- * Materials: Document / PDF / Archive resources. Their detail call returns a
- * ~6h pre-signed blob URL, fetched right before each download.
+ * so those are re-checked every scan. Recording links are never stored; the
+ * downloader (recordings.js) and the web UI each fetch a fresh one (~12h) right
+ * before use.
  */
-const fs = require('fs');
-const path = require('path');
 const config = require('./config');
 const lms = require('./lms');
 const store = require('./store');
-const { downloadTo, safeName } = require('./download');
-
-const MATERIAL_TYPES = new Set(['document', 'pdf', 'archive']);
+const { downloadRecordings } = require('./recordings');
 
 let running = null;
 
@@ -37,7 +30,7 @@ async function scan() {
   const startedAt = Date.now();
   console.log('=== scan start', new Date().toISOString(), '===');
   config.ensureDirs();
-  const summary = { periods: [], classes: 0, sessions: 0, recordings: { new: 0, notYet: 0 }, materials: { downloaded: 0, failed: 0 } };
+  const summary = { periods: [], classes: 0, sessions: 0, recordings: { new: 0, notYet: 0 } };
 
   for (const period of await resolvePeriods()) {
     summary.periods.push(period);
@@ -46,6 +39,15 @@ async function scan() {
         summary.classes++;
         await scanClass(period, component, cls, summary);
       }
+    }
+  }
+
+  if (config.downloadRecordings) {
+    try {
+      Object.assign(summary.recordings, await downloadRecordings());
+    } catch (err) {
+      summary.recordings.error = err.message;
+      console.error(`✗ Recording downloads stopped: ${err.message}`);
     }
   }
 
@@ -78,64 +80,33 @@ async function scanClass(period, component, cls, summary) {
   for (const s of detail.sessions || []) {
     if (new Date(s.dateEnd) > new Date()) continue; // hasn't happened yet
     summary.sessions++;
+    const id = `recording:${s.id}`;
+    const known = store.getItem(id);
+    if (known && known.status !== 'not_yet') continue; // already found
+
     const sd = await lms.sessionDetail(s.id);
+    if (!sd.joinUrl || sd.deliveryMode === 'GSLC') continue; // no meeting → no recording
     const ctx = {
       ...base,
+      id,
       sessionId: s.id,
       sessionNumber: Number(s.classSessionNumber),
       sessionDate: sd.dateStart || s.dateEnd,
     };
-    await trackRecording(ctx, sd, summary);
-    if (config.downloadMaterials) await collectMaterials(ctx, sd, summary);
+    await trackRecording(ctx, summary);
   }
 }
 
-async function trackRecording(ctx, sd, summary) {
-  if (!sd.joinUrl || sd.deliveryMode === 'GSLC') return; // no meeting → no recording
-  const id = `recording:${ctx.sessionId}`;
-  const known = store.getItem(id);
-  if (known && known.status !== 'not_yet') return; // already found
-
+async function trackRecording(ctx, summary) {
   const rec = await lms.zoomRecording(ctx.sessionId);
   const status = store.upsertItem(
-    { ...ctx, id, kind: 'recording', title: `Session ${ctx.sessionNumber} recording` },
+    { ...ctx, kind: 'recording', title: `Session ${ctx.sessionNumber} recording` },
     rec && rec.recordingUrl ? 'available' : 'not_yet'
   );
   if (status === 'available') {
     summary.recordings.new++;
     console.log(`  + recording: ${ctx.courseCode} ${ctx.component} session ${ctx.sessionNumber}`);
   } else summary.recordings.notYet++;
-}
-
-async function collectMaterials(ctx, sd, summary) {
-  for (const r of sd.resources || []) {
-    if (!MATERIAL_TYPES.has(String(r.resourceType).toLowerCase())) continue;
-    const id = `material:${r.id}`;
-    store.upsertItem({ ...ctx, id, kind: 'material', resourceId: r.id, title: r.name }, 'available');
-
-    const item = store.getItem(id);
-    if (item.status === 'downloaded' && item.file_path && fs.existsSync(path.join(config.downloadDir, item.file_path))) continue;
-
-    try {
-      const res = await lms.resourceDetail(ctx.sessionId, r.id);
-      if (!res || !res.url) throw new Error('No download URL for this resource.');
-      const fileName = safeName(decodeURIComponent(path.posix.basename(new URL(res.url).pathname)) || r.name);
-      const rel = path.join(
-        safeName(ctx.period),
-        safeName(`${ctx.courseCode} ${ctx.courseTitle} (${ctx.component})`),
-        safeName(`S${String(ctx.sessionNumber).padStart(2, '0')}`),
-        fileName
-      );
-      const size = await downloadTo(res.url, rel, { expectedSize: res.contentLength || undefined });
-      store.markDownloaded(id, rel, size);
-      summary.materials.downloaded++;
-      console.log(`  ↓ ${rel} (${size} B)`);
-    } catch (err) {
-      store.markFailed(id, err.message);
-      summary.materials.failed++;
-      console.error(`  ✗ ${ctx.courseCode} S${ctx.sessionNumber} "${r.name}": ${err.message}`);
-    }
-  }
 }
 
 module.exports = { runScan, isScanning };

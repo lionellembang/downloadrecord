@@ -49,7 +49,8 @@ const config = {
   // Scanning
   scanIntervalMinutes: int(process.env.SCAN_INTERVAL_MINUTES, 360),
   periods: list(process.env.PERIODS),
-  downloadMaterials: bool(process.env.DOWNLOAD_MATERIALS, true),
+  downloadRecordings: bool(process.env.DOWNLOAD_RECORDINGS, true),
+  recordingTimeoutMin: int(process.env.RECORDING_TIMEOUT_MIN, 90),
 
   timezone: process.env.TZ || 'Asia/Jakarta',
 };

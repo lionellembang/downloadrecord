@@ -45,7 +45,7 @@ async function login() {
 
     let handle;
     try {
-      handle = await launchColdBrowser(attempt);
+      handle = await launchColdBrowser(`Login attempt ${attempt}`);
       // If the deadline wins, runLogin() keeps going until the browser is torn
       // down; swallow its late rejection so it can't crash the process.
       const run = runLogin(handle.browser);
@@ -119,7 +119,7 @@ async function reachDashboard(page) {
   const signInBtn = page.getByRole('button', { name: /Sign in with Microsoft/i });
   await signInBtn.waitFor({ timeout: STEP_TIMEOUT_MS });
   await signInBtn.click();
-  await doMicrosoftLogin(page);
+  await doMicrosoftLogin(page, /binusmaya\.binus\.ac\.id/);
 
   console.log('→ Waiting for the dashboard to finish loading …');
   const ok = await lmsTile
@@ -143,9 +143,14 @@ async function openLms(page, context, lmsTile) {
 
 /**
  * Microsoft Entra sign-in pages: #idSIButton9 is the primary button on every
- * step. The context is always empty, so the email form must appear.
+ * step. The context is always empty, so the email form must appear. `doneUrl`
+ * (anything page.waitForURL accepts) is where the sign-in should land.
  */
-async function doMicrosoftLogin(page) {
+async function doMicrosoftLogin(page, doneUrl) {
+  if (!config.username || !isPasswordSet()) {
+    throw new Error('BINUS_USERNAME / BINUS_PASSWORD must be set in .env.');
+  }
+
   const email = page.locator('input[type="email"]');
   await email.waitFor({ timeout: STEP_TIMEOUT_MS }).catch(() => {
     throw new Error(`Microsoft email prompt never appeared (at ${page.url()}).`);
@@ -167,7 +172,7 @@ async function doMicrosoftLogin(page) {
     /* prompt didn't appear — fine */
   }
 
-  await page.waitForURL(/binusmaya\.binus\.ac\.id/, { timeout: 30000 });
+  await page.waitForURL(doneUrl, { timeout: 30000 });
 }
 
 function decodeJwtExp(token) {
@@ -182,4 +187,4 @@ function decodeJwtExp(token) {
   }
 }
 
-module.exports = { login, decodeJwtExp };
+module.exports = { login, doMicrosoftLogin, decodeJwtExp };

@@ -1,8 +1,7 @@
 /**
- * SQLite (built-in node:sqlite) record of every downloadable thing we've seen:
- * one row per recording (keyed by class session) and per material file (keyed
- * by resource). Short-lived URLs are never stored — they're fetched fresh right
- * before each download.
+ * SQLite (built-in node:sqlite) record of every recording we've seen, one row
+ * per class session. Short-lived URLs are never stored — they're fetched fresh
+ * right before each download.
  *
  * status:
  *   not_yet     recording endpoint said 404 — re-checked every scan
@@ -23,7 +22,7 @@ function getDb() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS items (
       id             TEXT PRIMARY KEY,
-      kind           TEXT NOT NULL,          -- 'recording' | 'material'
+      kind           TEXT NOT NULL,          -- 'recording'
       period         TEXT,
       class_id       TEXT,
       course_code    TEXT,
@@ -45,6 +44,7 @@ function getDb() {
       downloaded_at  TEXT
     );
     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+    DELETE FROM items WHERE kind = 'material'; -- course materials are no longer tracked
   `);
   return db;
 }

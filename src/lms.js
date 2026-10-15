@@ -57,12 +57,9 @@ module.exports = {
     request(`${COURSE}/Course/Period/${enc(periodCode)}/Component/${enc(component)}/${ROLE}`),
   /** { classCode, courseCode, courseTitleEn, sessions: [{ id, classSessionNumber, dateEnd, … }], … } */
   classDetail: (classId) => request(`${COURSE}/ClassSession/Class/${enc(classId)}/${ROLE}`),
-  /** { topic, deliveryMode, joinUrl, dateStart, dateEnd, resources: [{ id, name, resourceType, … }], … } */
+  /** { topic, deliveryMode, joinUrl, dateStart, dateEnd, … } */
   sessionDetail: (sessionId) =>
     request(`${COURSE}/ClassSession/Session/${enc(sessionId)}/Resource/${ROLE}?isWeb=true`),
-  /** { id, name, resourceType, url, contentLength, … } — url is a ~6h pre-signed blob URL for files. */
-  resourceDetail: (sessionId, resourceId) =>
-    request(`${COURSE}/ClassSession/${enc(sessionId)}/Session/Resource/${enc(resourceId)}`),
   /** { recordingUrl, expiredDate } or null when there's no recording (yet). */
   zoomRecording: (sessionId) =>
     requestOptional(`${COURSE}/ClassSessionContent/ZoomRecording/ClassSession/${enc(sessionId)}`),

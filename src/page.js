@@ -1,6 +1,6 @@
 /**
  * Server-rendered dashboard: one table per class, one row per session, showing
- * the recording (open link / not yet) and the downloaded material files.
+ * its recording (downloaded file / SharePoint link / not yet).
  */
 const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -10,7 +10,7 @@ const fmtSize = (n) => (n == null ? '' : n < 1024 ** 2 ? `${(n / 1024).toFixed(0
 const filesHref = (base, rel) => `${base}/files/${String(rel).split(/[\\/]/).map(encodeURIComponent).join('/')}`;
 
 function renderDashboard({ base, items, lastScan, scanning }) {
-  // period → class → session → { recording, materials[] }
+  // period → class → session → recording
   const classes = new Map();
   for (const it of items) {
     const key = `${it.period}|${it.class_id}`;
@@ -18,28 +18,19 @@ function renderDashboard({ base, items, lastScan, scanning }) {
       classes.set(key, { period: it.period, title: `${it.course_code} — ${it.course_title}`, component: it.component, classCode: it.class_code, sessions: new Map() });
     }
     const sessions = classes.get(key).sessions;
-    if (!sessions.has(it.session_id)) sessions.set(it.session_id, { n: it.session_number, date: it.session_date, id: it.session_id, recording: null, materials: [] });
-    const s = sessions.get(it.session_id);
-    if (it.kind === 'recording') s.recording = it;
-    else s.materials.push(it);
+    sessions.set(it.session_id, { n: it.session_number, date: it.session_date, id: it.session_id, recording: it });
   }
 
   const recCell = (s) => {
     const r = s.recording;
-    if (!r) return '<span class="muted">—</span>';
     if (r.status === 'not_yet') return '<span class="muted">not yet</span>';
-    return `<a href="${base}/recording/${encodeURIComponent(s.id)}" target="_blank" rel="noopener">Open recording</a>`;
+    const open = `<a href="${base}/recording/${encodeURIComponent(s.id)}" target="_blank" rel="noopener">Open on SharePoint</a>`;
+    if (r.status === 'downloaded') {
+      return `<a href="${filesHref(base, r.file_path)}">Recording</a> <span class="muted">${fmtSize(r.size)}</span><br>${open}`;
+    }
+    if (r.status === 'failed') return `${open}<br><span class="err" title="${esc(r.error || '')}">download failed</span>`;
+    return `${open}<br><span class="muted">download pending</span>`;
   };
-  const matCell = (s) =>
-    s.materials.length
-      ? s.materials
-          .map((m) =>
-            m.status === 'downloaded'
-              ? `<a href="${filesHref(base, m.file_path)}">${esc(m.title)}</a> <span class="muted">${fmtSize(m.size)}</span>`
-              : `<span class="${m.status === 'failed' ? 'err' : 'muted'}" title="${esc(m.error || '')}">${esc(m.title)} (${esc(m.status)})</span>`
-          )
-          .join('<br>')
-      : '<span class="muted">—</span>';
 
   const tables = [...classes.values()]
     .map(
@@ -47,10 +38,10 @@ function renderDashboard({ base, items, lastScan, scanning }) {
     <section>
       <h2>${esc(c.title)} <span class="tag">${esc(c.component)}</span> <span class="muted">${esc(c.classCode)} · ${esc(c.period)}</span></h2>
       <div class="scroll"><table>
-        <thead><tr><th>Session</th><th>Date</th><th>Recording</th><th>Materials</th></tr></thead>
+        <thead><tr><th>Session</th><th>Date</th><th>Recording</th></tr></thead>
         <tbody>${[...c.sessions.values()]
           .sort((a, b) => a.n - b.n)
-          .map((s) => `<tr><td>${esc(s.n)}</td><td>${esc(fmtDate(s.date))}</td><td>${recCell(s)}</td><td>${matCell(s)}</td></tr>`)
+          .map((s) => `<tr><td>${esc(s.n)}</td><td>${esc(fmtDate(s.date))}</td><td>${recCell(s)}</td></tr>`)
           .join('')}</tbody>
       </table></div>
     </section>`
@@ -81,7 +72,7 @@ function renderDashboard({ base, items, lastScan, scanning }) {
     <form method="post" action="${base}/scan"><button type="submit">Scan now</button></form>
   </header>
   ${tables || '<p class="muted">Nothing found yet — run a scan.</p>'}
-  <p class="muted" style="margin-top:32px">Recordings open in your browser on SharePoint (sign in with your BINUS account). Each link is fetched fresh when you click it.</p>
+  <p class="muted" style="margin-top:32px">Recordings are downloaded on each scan. <em>Open on SharePoint</em> opens one in your browser (sign in with your BINUS account); each link is fetched fresh when you click it.</p>
 </main></body></html>`;
 }
 

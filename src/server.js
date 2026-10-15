@@ -7,7 +7,7 @@
  *   GET  /d/<token>/api/items             → JSON list (?kind=&status=&period=)
  *   POST /d/<token>/scan                  → start a scan now (202)
  *   GET  /d/<token>/recording/<sessionId> → redirect to a fresh recording link
- *   GET  /d/<token>/files/<path>          → a downloaded material file
+ *   GET  /d/<token>/files/<path>          → a downloaded recording
  */
 const express = require('express');
 const config = require('./config');
